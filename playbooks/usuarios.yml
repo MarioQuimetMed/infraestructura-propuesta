@@ -1,0 +1,125 @@
+---
+# Usuarios, grupos y claves SSH.
+# La lista de usuarios está en inventory/<entorno>/group_vars/servidores/usuarios.yml
+#
+# Simular:   ansible-playbook playbooks/usuarios.yml --check --diff
+# Aplicar:   ansible-playbook playbooks/usuarios.yml
+
+- name: Gestionar usuarios y accesos SSH
+  hosts: servidores
+  become: true
+
+  vars:
+    # Grupos suplementarios según rol. Se aplican de forma EXCLUSIVA
+    # (append: false): si alguien añade a mano un dev a sudo o docker,
+    # la próxima ejecución lo quita.
+    grupos_por_rol:
+      admin: [ssh-access, admins]
+      dev: [ssh-access]
+
+  tasks:
+    # --- Comprobar los datos antes de cambiar nada ---------------------------
+
+    - name: Consultar usuarios existentes
+      ansible.builtin.getent:
+        database: passwd
+
+    - name: Consultar grupos existentes
+      ansible.builtin.getent:
+        database: group
+
+    - name: Comprobar que existen los administradores indicados
+      ansible.builtin.assert:
+        that:
+          - administradores_existentes | difference(ansible_facts.getent_passwd.keys() | list) | length == 0
+        fail_msg: >-
+          Estos usuarios de administradores_existentes no existen en el servidor:
+          {{ administradores_existentes | difference(ansible_facts.getent_passwd.keys() | list) | join(', ') }}
+        quiet: true
+
+    # Evita que un error al escribir "estado" deje a alguien con acceso sin avisar.
+    - name: Comprobar la lista de usuarios
+      ansible.builtin.assert:
+        that:
+          - item.nombre is match('^[a-z_][a-z0-9_-]*$')
+          - item.estado in ['present', 'absent']
+          - item.estado == 'absent' or item.rol in grupos_por_rol
+          - item.estado == 'absent' or item.claves | length > 0
+        fail_msg: "Usuario mal definido en usuarios.yml: {{ item }}"
+        quiet: true
+      loop: "{{ usuarios }}"
+      loop_control:
+        label: "{{ item.nombre | default('sin nombre') }}"
+
+    # --- Grupos y permisos ---------------------------------------------------
+
+    - name: Crear grupos de acceso
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - ssh-access
+        - admins
+
+    # Las cuentas no tienen contraseña, así que el grupo "sudo" de Ubuntu, que
+    # la exige, no les serviría. Solo los usuarios con rol admin están en "admins".
+    - name: Permitir sudo sin contraseña al grupo admins
+      ansible.builtin.copy:
+        content: |
+          %admins ALL=(ALL:ALL) NOPASSWD: ALL
+        dest: /etc/sudoers.d/90-admins
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+
+    # En --check, los grupos nuevos aún no existen y el módulo user fallaría.
+    # Por eso estas dos tareas se omiten en simulación si falta algún grupo.
+    - name: Añadir administradores existentes a ssh-access
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: ssh-access
+        append: true          # conserva sus grupos actuales (sudo, google-sudoers...)
+      loop: "{{ administradores_existentes }}"
+      when: not ansible_check_mode or 'ssh-access' in ansible_facts.getent_group
+
+    # --- Usuarios ------------------------------------------------------------
+
+    - name: Crear o actualizar usuarios
+      ansible.builtin.user:
+        name: "{{ item.nombre }}"
+        comment: "{{ item.descripcion }}"
+        shell: /bin/bash
+        create_home: true
+        groups: "{{ grupos_por_rol[item.rol] }}"
+        append: false
+        # Sin contraseña (cuenta bloqueada para login por contraseña):
+        # solo se entra con clave SSH.
+        password: "!"
+        update_password: on_create
+        state: present
+      loop: "{{ usuarios | selectattr('estado', 'equalto', 'present') }}"
+      loop_control:
+        label: "{{ item.nombre }}"
+      when: not ansible_check_mode or grupos_por_rol[item.rol] | difference(ansible_facts.getent_group.keys() | list) | length == 0
+
+    # En --check, un usuario nuevo aún no existe y no se pueden comprobar sus claves.
+    - name: Configurar claves SSH autorizadas
+      ansible.posix.authorized_key:
+        user: "{{ item.nombre }}"
+        key: "{{ item.claves | join('\n') }}"
+        exclusive: true       # solo las claves listadas; el resto se elimina
+        state: present
+      loop: "{{ usuarios | selectattr('estado', 'equalto', 'present') }}"
+      loop_control:
+        label: "{{ item.nombre }}"
+      when: not ansible_check_mode or item.nombre in ansible_facts.getent_passwd
+
+    - name: Eliminar usuarios dados de baja
+      ansible.builtin.user:
+        name: "{{ item.nombre }}"
+        state: absent
+        remove: true          # borra también su home
+      loop: "{{ usuarios | selectattr('estado', 'equalto', 'absent') }}"
+      loop_control:
+        label: "{{ item.nombre }}"

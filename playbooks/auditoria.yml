@@ -1,0 +1,183 @@
+---
+# Auditoría: registra qué programas ejecuta cada persona y quién cambia archivos
+# importantes. Dos piezas trabajan juntas:
+#
+#   auditd: lo registra el kernel, aunque la persona borre su historial de bash.
+#           Recuerda quién inició la sesión aunque luego use sudo.
+#   Laurel: convierte esos registros, difíciles de leer, en JSON con el nombre de
+#           usuario. Ese archivo es el que Alloy envía a Grafana.
+#
+# Qué NO registra: comandos internos de bash (cd, echo > archivo) ni lo que se
+# haga dentro de psql, python o un contenedor. Ver docs/pendientes.md.
+
+- name: Configurar la auditoría de comandos
+  hosts: servidores
+  become: true
+
+  vars:
+    laurel_version: "0.8.2"
+    # Huella publicada por el proyecto. Si la descarga se altera, la tarea falla.
+    laurel_sha256: "c9b495acf67e9941760b24308145b513b2ee2a0a5bfe0a5bd70d5133c27c6e6c"
+    # Cada versión va en su carpeta, así subir de versión es cambiar estos valores.
+    laurel_carpeta: "/opt/laurel-{{ laurel_version }}"
+
+  tasks:
+    # --- auditd ---------------------------------------------------------------
+
+    - name: Configurar las reglas de auditoría
+      ansible.builtin.copy:
+        src: files/auditoria/50-servidor.rules
+        dest: /etc/audit/rules.d/50-servidor.rules
+        owner: root
+        group: root
+        mode: "0640"
+      notify: Cargar las reglas de auditoría
+
+    # Registrar cada comando genera muchos datos. Estos límites hacen que los
+    # archivos antiguos se borren: guarda 10 archivos de 50 MB como máximo.
+    - name: Limitar el espacio de los logs de auditd
+      ansible.builtin.lineinfile:
+        path: /etc/audit/auditd.conf
+        regexp: "^{{ item.opcion }}\\s*="
+        line: "{{ item.opcion }} = {{ item.valor }}"
+      loop:
+        - { opcion: max_log_file, valor: 50 }
+        - { opcion: num_logs, valor: 10 }
+        - { opcion: max_log_file_action, valor: ROTATE }
+      notify: Recargar auditd
+
+    # --- Laurel ---------------------------------------------------------------
+
+    # Laurel no se ejecuta como root: usa este usuario, sin acceso de inicio de sesión.
+    - name: Crear el usuario de Laurel
+      ansible.builtin.user:
+        name: _laurel
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/log/laurel
+        create_home: false
+
+    # Laurel pone esta carpeta en 0755 cada vez que arranca, y con otro modo Alloy
+    # no podría entrar a leer. El log sigue protegido: tiene modo 0640, y solo
+    # Laurel y el grupo adm pueden leerlo.
+    - name: Crear la carpeta de logs de Laurel
+      ansible.builtin.file:
+        path: /var/log/laurel
+        state: directory
+        owner: _laurel
+        group: _laurel
+        mode: "0755"
+
+    # No está en los repositorios de Ubuntu, así que se descarga de su proyecto.
+    - name: Descargar Laurel
+      ansible.builtin.get_url:
+        url: "https://github.com/threathunters-io/laurel/releases/download/v{{ laurel_version }}/laurel-{{ laurel_version }}-x86_64-glibc.tar.gz"
+        dest: "/opt/laurel-{{ laurel_version }}.tar.gz"
+        checksum: "sha256:{{ laurel_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Crear la carpeta de instalación de Laurel
+      ansible.builtin.file:
+        path: "{{ laurel_carpeta }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Instalar Laurel
+      ansible.builtin.unarchive:
+        src: "/opt/laurel-{{ laurel_version }}.tar.gz"
+        dest: "{{ laurel_carpeta }}"
+        remote_src: true
+        # Las rutas del archivo son ./laurel-x.y.z/bin/laurel. Se quitan los dos
+        # primeros niveles para que el programa quede en bin/laurel.
+        extra_opts: ["--strip-components=2"]
+        creates: "{{ laurel_carpeta }}/bin/laurel"
+      notify: Recargar auditd
+
+    # Al descomprimir como root se conserva el número de usuario del archivo, que
+    # aquí puede coincidir con el de una persona del servidor. auditd ejecuta Laurel
+    # como root, y por seguridad se niega si el programa no pertenece a root.
+    - name: Hacer a root dueño de los archivos de Laurel
+      ansible.builtin.file:
+        path: "{{ laurel_carpeta }}"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+      notify: Recargar auditd
+
+    - name: Crear la carpeta de configuración de Laurel
+      ansible.builtin.file:
+        path: /etc/laurel
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configurar Laurel
+      ansible.builtin.copy:
+        src: files/auditoria/laurel.toml
+        dest: /etc/laurel/config.toml
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Recargar auditd
+
+    # Este archivo le dice a auditd que entregue todos sus eventos a Laurel.
+    - name: Conectar Laurel con auditd
+      ansible.builtin.copy:
+        content: |
+          active = yes
+          direction = out
+          type = always
+          format = string
+          path = {{ laurel_carpeta }}/bin/laurel
+          args = --config /etc/laurel/config.toml
+        dest: /etc/audit/plugins.d/laurel.conf
+        owner: root
+        group: root
+        mode: "0640"
+      notify: Recargar auditd
+
+    - name: Aplicar la auditoría ahora si cambió
+      ansible.builtin.meta: flush_handlers
+
+    # --- Comprobar que funciona -----------------------------------------------
+
+    - name: Leer las reglas activas
+      ansible.builtin.command:
+        cmd: auditctl -l
+      register: auditoria_reglas
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Comprobar que las reglas están activas
+      ansible.builtin.assert:
+        that:
+          - "'comandos' in auditoria_reglas.stdout"
+        fail_msg: "auditd no cargó las reglas. Revisa: sudo journalctl -u auditd"
+        quiet: true
+      when: not ansible_check_mode
+
+    # El propio Ansible ejecuta programas, así que este archivo debe aparecer enseguida.
+    - name: Comprobar que Laurel recibe eventos
+      ansible.builtin.wait_for:
+        path: /var/log/laurel/audit.log
+        timeout: 30
+      when: not ansible_check_mode
+
+  handlers:
+    - name: Cargar las reglas de auditoría
+      ansible.builtin.command:
+        cmd: augenrules --load
+      changed_when: true
+
+    # auditd no permite "systemctl restart": esta señal es la forma documentada
+    # de que relea su configuración y arranque Laurel.
+    - name: Recargar auditd
+      ansible.builtin.command:
+        cmd: pkill -HUP -x auditd
+      changed_when: true

@@ -1,0 +1,31 @@
+---
+# Usuarios con acceso SSH al servidor de PRODUCCIÓN.
+# Lo usa playbooks/usuarios.yml.
+#
+# Campos:
+#   nombre:      usuario Linux
+#   descripcion: quién es (queda en /etc/passwd)
+#   rol:         admin -> ssh-access + sudo sin contraseña (grupo admins)
+#                dev   -> solo ssh-access (sin sudo, sin docker)
+#   claves:      claves PÚBLICAS SSH (.pub). Nunca pegar una clave privada.
+#                Son las únicas permitidas: quitar una línea revoca esa clave.
+#   estado:      present (crear/mantener) | absent (eliminar usuario y su home)
+#
+# Para dar de baja a alguien: cambiar su estado a absent (no borrar la entrada
+# hasta haber ejecutado el playbook, o el usuario seguiría existiendo).
+
+# Sin usuarios todavía. Ejemplo:
+#
+# usuarios:
+#   - nombre: admin_nombre
+#     descripcion: "Nombre - administrador"
+#     rol: admin
+#     claves:
+#       - "ssh-ed25519 AAAA... nombre@su-pc"
+#     estado: present
+usuarios: []
+
+# Cuentas que ya existen en el servidor y no gestiona este playbook. Añadir aquí
+# tu usuario administrador antes de aplicar "AllowGroups ssh-access" en el
+# hardening SSH, o te quedarás fuera del servidor.
+administradores_existentes: []

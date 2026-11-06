@@ -1,0 +1,50 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+#
+# Loki guarda y busca los logs. Se configura para un solo servidor, con los datos
+# en disco y accesible solo desde 127.0.0.1, porque no tiene usuarios ni contraseñas.
+
+auth_enabled: false
+
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3100
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9096
+  # Loki escribe mucho sobre sí mismo, y esos logs acaban guardados en el propio
+  # Loki. Con "warn" solo registra avisos y errores, y ocupa mucho menos.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /var/lib/loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /var/lib/loki/chunks
+      rules_directory: /var/lib/loki/rules
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# Borra los logs con más de 90 días (2160 horas).
+limits_config:
+  retention_period: 2160h
+
+compactor:
+  working_directory: /var/lib/loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+# No envía datos de uso a Grafana Labs.
+analytics:
+  reporting_enabled: false

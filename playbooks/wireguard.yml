@@ -1,0 +1,89 @@
+---
+# WireGuard: la VPN por la que entra el equipo de administración.
+#
+# Crea una red privada 10.60.0.0/24 entre el servidor y tu PC. Lo que viaja por
+# ella va cifrado, y solo pueden entrar los clientes de esta lista.
+#
+# Los clientes están en inventory/<entorno>/group_vars/servidores/wireguard.yml
+# Para dar de baja a alguien, borra su entrada y aplica.
+#
+# Primera instalación: usa apply. "plan" falla si WireGuard aún no está instalado.
+
+- name: Configurar la VPN WireGuard
+  hosts: servidores
+  become: true
+
+  tasks:
+    - name: Comprobar la lista de clientes
+      ansible.builtin.assert:
+        that:
+          - item.nombre is match('^[A-Za-z0-9_-]+$')
+          - item.ip is match('^10\.60\.0\.[0-9]+$')
+          - item.ip != wireguard_ip_servidor
+          # Una clave pública de WireGuard siempre tiene 44 caracteres.
+          - item.clave_publica | length == 44
+        fail_msg: "Cliente mal definido en wireguard.yml: {{ item.nombre | default(item) }}"
+        quiet: true
+      loop: "{{ wireguard_clientes }}"
+      loop_control:
+        label: "{{ item.nombre | default('sin nombre') }}"
+
+    - name: Instalar WireGuard
+      ansible.builtin.apt:
+        name: wireguard-tools
+        state: present
+
+    - name: Crear la carpeta de configuración
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # La clave privada se genera en el servidor y nunca sale de ahí: no está en
+    # este repositorio ni en el Vault. "creates" hace que solo se genere una vez.
+    - name: Generar la clave privada del servidor
+      ansible.builtin.shell:
+        cmd: umask 077 && wg genkey > /etc/wireguard/servidor.key
+        creates: /etc/wireguard/servidor.key
+      notify: Reiniciar WireGuard
+
+    - name: Configurar la interfaz wg0
+      ansible.builtin.template:
+        src: templates/wireguard/wg0.conf.j2
+        dest: /etc/wireguard/wg0.conf
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Reiniciar WireGuard
+
+    - name: Habilitar y arrancar WireGuard
+      ansible.builtin.systemd_service:
+        name: wg-quick@wg0
+        enabled: true
+        state: started
+
+    - name: Aplicar la configuración ahora si cambió
+      ansible.builtin.meta: flush_handlers
+
+    # La clave pública no es secreta. Cada cliente la necesita en su configuración.
+    - name: Leer la clave pública del servidor
+      ansible.builtin.shell:
+        cmd: wg pubkey < /etc/wireguard/servidor.key
+      register: wireguard_publica
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Mostrar los datos para configurar los clientes
+      ansible.builtin.debug:
+        msg: "Clave pública del servidor: {{ wireguard_publica.stdout }} | Puerto UDP: {{ wireguard_puerto }}"
+      when: not ansible_check_mode
+
+  handlers:
+    # Se reinicia en vez de recargar porque la clave se aplica al arrancar la
+    # interfaz. El corte dura un instante y las sesiones SSH abiertas sobreviven.
+    - name: Reiniciar WireGuard
+      ansible.builtin.systemd_service:
+        name: wg-quick@wg0
+        state: restarted

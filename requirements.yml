@@ -1,0 +1,11 @@
+---
+# Colecciones que necesitan los playbooks.
+# Instalar con: ansible-galaxy collection install -r requirements.yml
+
+collections:
+  - name: ansible.posix # authorized_key, en playbooks/usuarios.yml
+    version: ">=2.2.0,<3.0.0"
+  - name: community.general # ufw, en playbooks/acceso.yml
+    version: ">=13.0.0,<14.0.0"
+  - name: community.postgresql # bases y usuarios, en playbooks/postgres.yml
+    version: ">=4.0.0,<5.0.0"

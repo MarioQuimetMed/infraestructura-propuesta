@@ -1,0 +1,22 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+
+[server]
+# Solo responde dentro de la VPN.
+http_addr = {{ wireguard_ip_servidor }}
+http_port = 3000
+
+[security]
+admin_user = admin
+# Las comillas triples permiten usar cualquier carácter en la contraseña.
+admin_password = """{{ vault_grafana_admin }}"""
+
+[users]
+# Nadie puede crearse una cuenta por su cuenta.
+allow_sign_up = false
+
+[auth.anonymous]
+enabled = false
+
+# No envía datos de uso a Grafana Labs.
+[analytics]
+reporting_enabled = false

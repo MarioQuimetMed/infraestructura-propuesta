@@ -1,0 +1,18 @@
+---
+# Bases de datos de PRODUCCIÓN. Lo usa playbooks/postgres.yml.
+#
+# Campos:
+#   nombre:     nombre de la base
+#   usuario:    usuario dueño de la base, uno distinto por proyecto
+#   contrasena: referencia a un valor de vault.yml. Nunca escribirla aquí.
+#
+# Para añadir una base:
+#   1. Añádela aquí, con contrasena: "{{ vault_pg_NOMBRE }}"
+#   2. Ejecuta .\ansible produccion secretos y añade vault_pg_NOMBRE con un valor nuevo.
+#
+# Ejemplo:
+#   - nombre: ventas
+#     usuario: ventas_app
+#     contrasena: "{{ vault_pg_ventas }}"
+
+postgres_bases: []

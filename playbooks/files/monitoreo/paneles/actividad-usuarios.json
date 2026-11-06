@@ -1,0 +1,125 @@
+{
+  "uid": "actividad-usuarios",
+  "title": "Actividad de usuarios",
+  "description": "Quién entró, cuándo y qué ejecutó.",
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "usuario",
+        "label": "Usuario",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(linux_usuario, usuario)", "refId": "usuario" },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "refresh": 2,
+        "sort": 1,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cuentas del servidor",
+      "description": "Personas con cuenta en Linux y sus grupos. Se actualiza cada 5 minutos.",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "linux_usuario", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Accesos por SSH (usuario, IP y clave)",
+      "description": "Entradas aceptadas y rechazadas, con la IP de origen.",
+      "type": "logs",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 7 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"journal\", programa=~\"sshd.*\"} |~ \"Accepted|Failed|Invalid user|Connection closed by authenticating\""
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Comandos en terminal (consulta diaria)",
+      "description": "Programas ejecutados en una terminal: lo que escribe la persona y lo que lanza bash al arrancar (groups, lesspipe, dircolors...). NO incluye lo que se ejecuta sin terminal, como ssh servidor \"comando\": para eso está el panel Todos los programas. La IP está en el panel de accesos.",
+      "type": "logs",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"auditoria\"} | json usuario=\"SYSCALL.AUID\", clave=\"SYSCALL.key\", sesion=\"SYSCALL.ses\", terminal=\"SYSCALL.tty\", comando=\"EXECVE.ARGV_STR\" | clave=\"comandos\" | comando!=\"\" | terminal=~\"(pts|tty).*\" | usuario=~\"$usuario\" | line_format \"{{.usuario}} [sesión {{.sesion}}, {{.terminal}}] {{.comando}}\""
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Todos los programas (para investigar)",
+      "description": "Registro completo: todo programa que llegó a ejecutarse en una sesión, con o sin terminal. Incluye el mensaje de bienvenida de Ubuntu, systemd, Ansible y los comandos lanzados con ssh servidor \"comando\". Los intentos fallidos no aparecen.",
+      "type": "logs",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"auditoria\"} | json usuario=\"SYSCALL.AUID\", clave=\"SYSCALL.key\", sesion=\"SYSCALL.ses\", terminal=\"SYSCALL.tty\", comando=\"EXECVE.ARGV_STR\" | clave=\"comandos\" | comando!=\"\" | usuario=~\"$usuario\" | line_format \"{{.usuario}} [sesión {{.sesion}}, {{.terminal}}] {{.comando}}\""
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Comandos con sudo",
+      "description": "Quién usó sudo, desde qué carpeta y con qué comando.",
+      "type": "logs",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 40 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        { "refId": "A", "expr": "{job=\"journal\", programa=\"sudo\"} |= \"COMMAND=\"" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Cambios en archivos importantes",
+      "description": "Escrituras en cuentas, sudoers, SSH, auditoría, Docker, Caddy y VPN.",
+      "type": "logs",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 49 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"auditoria\"} | json usuario=\"SYSCALL.AUID\", clave=\"SYSCALL.key\", programa=\"SYSCALL.exe\" | clave=~\"identidad|sudo|ssh|auditoria|docker|caddy|vpn\" | line_format \"{{.usuario}} [{{.clave}}] {{.programa}}\""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+---
+# PostgreSQL 16, el de Ubuntu, que recibe parches con las actualizaciones automáticas.
+#
+# Las bases están en inventory/<entorno>/group_vars/servidores/postgres.yml
+# y sus contraseñas, cifradas, en vault.yml del mismo entorno.
+#
+# Solo escucha en localhost, así que no es accesible desde Internet.
+# Las reglas de conexión que trae Ubuntu ya sirven y no se modifican:
+#   - en el propio servidor, cada usuario Linux entra solo como su usuario de PostgreSQL
+#   - por 127.0.0.1, con contraseña cifrada (scram-sha-256)
+#
+# Pendiente: los contenedores aún no pueden conectarse. Ver docs/pendientes.md.
+#
+# Primera instalación: usa apply. "plan" falla si PostgreSQL aún no está instalado.
+
+- name: Instalar y configurar PostgreSQL
+  hosts: servidores
+  become: true
+
+  tasks:
+    - name: Comprobar la lista de bases
+      ansible.builtin.assert:
+        that:
+          - item.nombre is match('^[a-z_][a-z0-9_]*$')
+          - item.usuario is match('^[a-z_][a-z0-9_]*$')
+          - item.contrasena is defined
+          - item.contrasena != 'CAMBIAR'
+        fail_msg: >-
+          Base mal definida en postgres.yml, o falta su contraseña en vault.yml.
+          Para editarla: .\ansible <entorno> secretos
+        quiet: true
+      loop: "{{ postgres_bases }}"
+      no_log: true              # sin esto, un fallo mostraría la contraseña
+
+    - name: Instalar PostgreSQL
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - python3-psycopg2    # lo necesita Ansible para gestionar las bases
+        state: present
+
+    - name: Configurar PostgreSQL
+      ansible.builtin.copy:
+        src: files/postgres/90-servidor.conf
+        dest: /etc/postgresql/16/main/conf.d/90-servidor.conf
+        owner: postgres
+        group: postgres
+        mode: "0644"
+      notify: Reiniciar PostgreSQL
+
+    - name: Habilitar y arrancar PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        enabled: true
+        state: started
+
+    - name: Aplicar la configuración ahora si cambió
+      ansible.builtin.meta: flush_handlers
+
+    # Estas tareas se ejecutan como "postgres", el administrador de la base.
+    # no_log evita que las contraseñas aparezcan en pantalla, incluso en "plan".
+    - name: Crear los usuarios de las bases
+      community.postgresql.postgresql_user:
+        name: "{{ item.usuario }}"
+        password: "{{ item.contrasena }}"
+      become: true
+      become_user: postgres
+      loop: "{{ postgres_bases }}"
+      no_log: true
+
+    # Quitar una base de la lista NO la borra. Borrar datos se hace a mano,
+    # para que un error en este archivo no pueda eliminarlos.
+    - name: Crear las bases
+      community.postgresql.postgresql_db:
+        name: "{{ item.nombre }}"
+        owner: "{{ item.usuario }}"
+      become: true
+      become_user: postgres
+      loop: "{{ postgres_bases }}"
+      loop_control:
+        label: "{{ item.nombre }}"
+
+    # Por defecto, cualquier usuario puede conectarse a cualquier base.
+    # Con esto, el usuario de un proyecto no puede entrar en la de otro.
+    - name: Impedir que otros usuarios se conecten a cada base
+      community.postgresql.postgresql_privs:
+        login_db: "{{ item.nombre }}"
+        type: database
+        privs: CONNECT
+        roles: PUBLIC
+        state: absent
+      become: true
+      become_user: postgres
+      loop: "{{ postgres_bases }}"
+      loop_control:
+        label: "{{ item.nombre }}"
+
+  handlers:
+    - name: Reiniciar PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: restarted

@@ -1,0 +1,9 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+#
+# Para lanzar un backup ahora: sudo systemctl start backup-servidor
+[Unit]
+Description=Backup del servidor con restic
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/backup-servidor.sh

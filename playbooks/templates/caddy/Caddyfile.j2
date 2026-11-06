@@ -1,0 +1,15 @@
+# Gestionado por Ansible (playbooks/caddy.yml). No editar a mano en el servidor:
+# los cambios se perderán en la próxima ejecución.
+
+{
+{% if caddy_email %}
+	email {{ caddy_email }}
+{% endif %}
+	# Logs del propio Caddy en JSON (útil para enviarlos a Loki más adelante)
+	log {
+		format json
+	}
+}
+
+# Un archivo por sitio, generado desde el caddy.yml del entorno
+import sites-enabled/*.caddy

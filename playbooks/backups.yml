@@ -1,0 +1,102 @@
+---
+# Backups diarios y cifrados con restic.
+#
+# Guarda /etc, /srv y una copia de cada base de PostgreSQL. Se ejecuta a las 3:00
+# y se conservan 7 copias diarias y 4 semanales.
+#
+# AVISO: el destino es una carpeta del PROPIO servidor. Solo sirve para probar y
+# para recuperar errores humanos: si se pierde el disco, se pierden los backups.
+# Ver docs/pendientes.md.
+
+- name: Configurar los backups
+  hosts: servidores
+  become: true
+
+  vars:
+    backup_repositorio: /var/backups/restic
+
+  tasks:
+    - name: Comprobar que existe la contraseña de los backups
+      ansible.builtin.assert:
+        that:
+          - vault_restic is defined
+          - vault_restic != 'CAMBIAR'
+        fail_msg: "Falta vault_restic en vault.yml. Créalo con: .\\ansible <entorno> secretos"
+        quiet: true
+      no_log: true
+
+    - name: Avisar de que los backups se guardan en el mismo servidor
+      ansible.builtin.debug:
+        msg: "AVISO: los backups están en {{ backup_repositorio }}. Si se pierde este disco, se pierden también."
+
+    - name: Instalar restic
+      ansible.builtin.apt:
+        name: restic
+        state: present
+
+    - name: Crear las carpetas de los backups
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - /etc/restic
+        - /var/backups/postgres
+        - "{{ backup_repositorio }}"
+
+    # Sin esta contraseña no se puede leer ningún backup. Se guarda también en
+    # vault.yml, que es de donde habría que recuperarla si se pierde el servidor.
+    - name: Guardar la contraseña de los backups
+      ansible.builtin.copy:
+        content: "{{ vault_restic }}\n"
+        dest: /etc/restic/contrasena
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      diff: false
+
+    # "creates" hace que el repositorio solo se cree la primera vez.
+    - name: Crear el repositorio de backups
+      ansible.builtin.command:
+        cmd: restic init
+        creates: "{{ backup_repositorio }}/config"
+      environment:
+        RESTIC_REPOSITORY: "{{ backup_repositorio }}"
+        RESTIC_PASSWORD_FILE: /etc/restic/contrasena
+
+    - name: Instalar el script de backup
+      ansible.builtin.copy:
+        src: files/backups/backup-servidor.sh
+        dest: /usr/local/sbin/backup-servidor.sh
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Instalar el servicio y su temporizador
+      ansible.builtin.copy:
+        src: "files/backups/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - backup-servidor.service
+        - backup-servidor.timer
+      notify: Recargar systemd
+
+    - name: Aplicar los cambios de systemd ahora si hubo
+      ansible.builtin.meta: flush_handlers
+
+    - name: Activar el temporizador de backups
+      ansible.builtin.systemd_service:
+        name: backup-servidor.timer
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Recargar systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true

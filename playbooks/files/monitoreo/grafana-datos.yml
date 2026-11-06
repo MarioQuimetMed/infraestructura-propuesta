@@ -1,0 +1,22 @@
+---
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+#
+# De dónde lee Grafana los datos. El "uid" es el nombre que usan los paneles.
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    editable: false
+
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false

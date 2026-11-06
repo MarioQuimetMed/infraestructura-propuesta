@@ -1,0 +1,221 @@
+---
+# Caddy: HTTPS automático y proxy inverso.
+# Los sitios se definen en inventory/<entorno>/group_vars/servidores/caddy.yml
+#
+# Primera instalación:  ansible-playbook playbooks/caddy.yml
+#   (--check no sirve en un servidor sin Caddy: el usuario/grupo "caddy"
+#    y sus carpetas todavía no existen y varias tareas fallarían)
+# Cambios posteriores:  ansible-playbook playbooks/caddy.yml --check --diff
+#   (muestra exactamente qué líneas de cada sitio cambiarían)
+
+- name: Instalar y configurar Caddy
+  hosts: servidores
+  become: true
+
+  tasks:
+    # --- Comprobar los datos antes de cambiar nada ---------------------------
+
+    - name: Comprobar la lista de sitios
+      ansible.builtin.assert:
+        that:
+          - item.nombre is match('^[A-Za-z0-9_-]+$')
+          - item.dominio | length > 0
+          - item.estado in ['present', 'absent']
+          - item.tipo in ['estatico', 'proxy']
+          - item.tipo != 'estatico' or item.raiz is defined
+          - item.tipo != 'proxy' or item.destino is defined
+        fail_msg: "Sitio mal definido en caddy.yml: {{ item }}"
+        quiet: true
+      loop: "{{ sitios }}"
+      loop_control:
+        label: "{{ item.nombre | default('sin nombre') }}"
+
+    # --- Instalación desde el repositorio oficial de Caddy -----------------
+    # (el paquete de Ubuntu 24.04 es una versión antigua)
+
+    - name: Añadir repositorio oficial de Caddy
+      ansible.builtin.deb822_repository:
+        name: caddy-stable
+        types: deb
+        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+        suites: any-version
+        components: main
+        signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+      register: repo_caddy
+
+    - name: Instalar Caddy
+      ansible.builtin.apt:
+        name: caddy
+        state: present
+        update_cache: "{{ repo_caddy is changed }}"
+
+    - name: Crear carpeta de sitios
+      ansible.builtin.file:
+        path: /etc/caddy/sites-enabled
+        state: directory
+        owner: root
+        group: caddy
+        mode: "0750"
+
+    - name: Crear carpeta de logs de Caddy
+      ansible.builtin.file:
+        path: /var/log/caddy
+        state: directory
+        owner: caddy
+        group: caddy
+        mode: "0755"
+
+    # Caddy crea sus logs legibles solo por él. Con el modo 0640, Alloy (que está
+    # en el grupo caddy) también puede leerlos para enviarlos a Grafana.
+    - name: Crear los logs de los sitios con permisos de lectura para el grupo
+      ansible.builtin.file:
+        path: "/var/log/caddy/{{ item.nombre }}.log"
+        state: touch
+        owner: caddy
+        group: caddy
+        mode: "0640"
+        access_time: preserve
+        modification_time: preserve
+      loop: "{{ sitios | selectattr('estado', 'equalto', 'present') }}"
+      loop_control:
+        label: "{{ item.nombre }}"
+
+    # --- Probar la configuración nueva sin tocar la instalada -----------------
+    # Se genera en una carpeta temporal y se valida ahí. Si tiene errores, el
+    # playbook se detiene y los archivos de /etc/caddy no cambian.
+    # También se ejecuta con --check, y no cuenta como cambio.
+
+    - name: Probar la configuración nueva de Caddy
+      check_mode: false
+      diff: false
+      block:
+        - name: Crear carpeta temporal de prueba
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: caddy-prueba-
+          register: caddy_prueba
+          changed_when: false
+
+        - name: Preparar carpetas de prueba
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: caddy
+            mode: "0750"
+          loop:
+            - "{{ caddy_prueba.path }}"
+            - "{{ caddy_prueba.path }}/sites-enabled"
+          changed_when: false
+
+        - name: Generar Caddyfile de prueba
+          ansible.builtin.template:
+            src: templates/caddy/Caddyfile.j2
+            dest: "{{ caddy_prueba.path }}/Caddyfile"
+            owner: root
+            group: caddy
+            mode: "0640"
+          changed_when: false
+
+        - name: Generar sitios de prueba
+          ansible.builtin.template:
+            src: templates/caddy/sitio.caddy.j2
+            dest: "{{ caddy_prueba.path }}/sites-enabled/{{ item.nombre }}.caddy"
+            owner: root
+            group: caddy
+            mode: "0640"
+          loop: "{{ sitios | selectattr('estado', 'equalto', 'present') }}"
+          loop_control:
+            label: "{{ item.dominio }}"
+          changed_when: false
+
+        # Se valida como el usuario "caddy" (el mismo que ejecuta el servicio):
+        # "caddy validate" abre los archivos de log al comprobarlos y, si se
+        # ejecutara como root, los crearía con dueño root y el servicio no
+        # podría escribir en ellos (permission denied al recargar).
+        - name: Validar configuración de prueba
+          ansible.builtin.command:
+            cmd: "caddy validate --config {{ caddy_prueba.path }}/Caddyfile --adapter caddyfile"
+          become: true
+          become_user: caddy
+          changed_when: false
+      always:
+        - name: Borrar carpeta temporal de prueba
+          ansible.builtin.file:
+            path: "{{ caddy_prueba.path }}"
+            state: absent
+          changed_when: false
+          when: caddy_prueba.path is defined
+
+    # --- Instalar la configuración ya validada --------------------------------
+
+    - name: Configurar Caddyfile principal
+      ansible.builtin.template:
+        src: templates/caddy/Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: caddy
+        mode: "0640"
+      notify: Recargar Caddy
+
+    - name: Configurar sitios
+      ansible.builtin.template:
+        src: templates/caddy/sitio.caddy.j2
+        dest: "/etc/caddy/sites-enabled/{{ item.nombre }}.caddy"
+        owner: root
+        group: caddy
+        mode: "0640"
+      loop: "{{ sitios | selectattr('estado', 'equalto', 'present') }}"
+      loop_control:
+        label: "{{ item.dominio }}"
+      notify: Recargar Caddy
+
+    - name: Eliminar sitios dados de baja
+      ansible.builtin.file:
+        path: "/etc/caddy/sites-enabled/{{ item.nombre }}.caddy"
+        state: absent
+      loop: "{{ sitios | selectattr('estado', 'equalto', 'absent') }}"
+      loop_control:
+        label: "{{ item.dominio }}"
+      notify: Recargar Caddy
+
+    # --- Contenido de los sitios estáticos ----------------------------------
+
+    - name: Crear carpetas de sitios estáticos
+      ansible.builtin.file:
+        path: "{{ item.raiz }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ sitios | selectattr('estado', 'equalto', 'present') | selectattr('tipo', 'equalto', 'estatico') }}"
+      loop_control:
+        label: "{{ item.raiz }}"
+
+    # Solo para la demo. En producción el contenido (build de React)
+    # lo publica el CI/CD, no este playbook.
+    - name: Publicar página de demostración
+      ansible.builtin.copy:
+        src: files/web-demo/
+        dest: /srv/www/web-demo/
+        owner: root
+        group: root
+        mode: "0644"
+      when: sitios | selectattr('nombre', 'equalto', 'web-demo') | selectattr('estado', 'equalto', 'present') | list | length > 0
+
+    # --- Servicio -----------------------------------------------------------
+
+    - name: Habilitar y arrancar Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        enabled: true
+        state: started
+
+    - name: Recargar Caddy ahora si cambió la configuración
+      ansible.builtin.meta: flush_handlers
+
+  handlers:
+    - name: Recargar Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        state: reloaded

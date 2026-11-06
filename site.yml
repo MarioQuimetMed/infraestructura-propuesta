@@ -1,0 +1,39 @@
+---
+# Punto de entrada: aplica toda la configuración, en este orden.
+# Al crear un playbook nuevo, hay que añadirlo aquí.
+#
+# El orden importa:
+#   - usuarios antes que acceso: acceso exige que tu usuario esté en ssh-access.
+#   - wireguard antes que acceso: el firewall permite SSH por la interfaz wg0.
+#   - postgres antes que backups: el backup guarda una copia de cada base.
+#   - caddy antes que monitoreo: Alloy necesita que exista el grupo caddy.
+
+- name: Aplicar configuración base
+  ansible.builtin.import_playbook: playbooks/base.yml
+
+- name: Aplicar usuarios y accesos
+  ansible.builtin.import_playbook: playbooks/usuarios.yml
+
+- name: Aplicar la VPN WireGuard
+  ansible.builtin.import_playbook: playbooks/wireguard.yml
+
+- name: Aplicar firewall y seguridad de SSH
+  ansible.builtin.import_playbook: playbooks/acceso.yml
+
+- name: Aplicar auditoría de comandos
+  ansible.builtin.import_playbook: playbooks/auditoria.yml
+
+- name: Aplicar Docker
+  ansible.builtin.import_playbook: playbooks/docker.yml
+
+- name: Aplicar PostgreSQL
+  ansible.builtin.import_playbook: playbooks/postgres.yml
+
+- name: Aplicar backups
+  ansible.builtin.import_playbook: playbooks/backups.yml
+
+- name: Aplicar Caddy
+  ansible.builtin.import_playbook: playbooks/caddy.yml
+
+- name: Aplicar monitoreo
+  ansible.builtin.import_playbook: playbooks/monitoreo.yml

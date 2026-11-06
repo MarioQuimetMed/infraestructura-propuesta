@@ -1,0 +1,15 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+
+[Interface]
+Address = {{ wireguard_ip_servidor }}/24
+ListenPort = {{ wireguard_puerto }}
+# La clave se lee de su propio archivo para que no aparezca en este ni en los
+# cambios que muestra "plan".
+PostUp = wg set %i private-key /etc/wireguard/servidor.key
+{% for cliente in wireguard_clientes %}
+
+# {{ cliente.nombre }}
+[Peer]
+PublicKey = {{ cliente.clave_publica }}
+AllowedIPs = {{ cliente.ip }}/32
+{% endfor %}

@@ -1,0 +1,21 @@
+---
+# VPN del entorno de TEST. Lo usa playbooks/wireguard.yml.
+
+wireguard_ip_servidor: 10.60.0.1
+wireguard_puerto: 51820
+
+# Personas que pueden conectarse a la VPN.
+# Campos:
+#   nombre:        para identificar a la persona o su equipo
+#   ip:            su dirección en la VPN (10.60.0.2, 10.60.0.3...), sin repetir
+#   clave_publica: su clave PÚBLICA de WireGuard, generada en su propia app.
+#                  Nunca pegar una clave privada.
+#
+# Ejemplo:
+#   - nombre: mario-pc
+#     ip: 10.60.0.2
+#     clave_publica: "PEGAR_AQUI_LOS_44_CARACTERES_DE_LA_CLAVE="
+wireguard_clientes:
+  - nombre: mario-pc
+    ip: 10.60.0.2
+    clave_publica: "k+TaYZsvkBewjouxnemWVRkxgW1KGZLK7sbn4pnLZUU="

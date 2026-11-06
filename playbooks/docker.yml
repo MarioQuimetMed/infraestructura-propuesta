@@ -1,0 +1,59 @@
+---
+# Docker Engine y Docker Compose, desde el repositorio oficial de Docker.
+#
+# Nadie se añade al grupo "docker": quien está en él puede obtener control total
+# del servidor. Se despliega con sudo o, más adelante, desde CI/CD.
+
+- name: Instalar y configurar Docker
+  hosts: servidores
+  become: true
+
+  tasks:
+    - name: Añadir el repositorio oficial de Docker
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: deb
+        uris: https://download.docker.com/linux/ubuntu
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: stable
+        signed_by: https://download.docker.com/linux/ubuntu/gpg
+      register: docker_repositorio
+
+    - name: Instalar Docker y Compose
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: "{{ docker_repositorio is changed }}"
+
+    # Docker abre los puertos que publica sin pasar por UFW. Por eso, por defecto,
+    # hace que solo se publiquen en 127.0.0.1, donde Caddy puede llegar pero
+    # Internet no. Abrir un puerto a Internet requiere escribir la IP a propósito.
+    - name: Configurar Docker
+      ansible.builtin.copy:
+        src: files/docker/daemon.json
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+        validate: dockerd --validate --config-file=%s
+      notify: Reiniciar Docker
+
+    - name: Habilitar y arrancar Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Aplicar la configuración de Docker ahora si cambió
+      ansible.builtin.meta: flush_handlers
+
+  handlers:
+    # Atención: reinicia todos los contenedores que estén en marcha.
+    - name: Reiniciar Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "ansible-generator": {
+      "source": "akin-ozer/cc-devops-skills",
+      "sourceType": "github",
+      "skillPath": "devops-skills-plugin/skills/ansible-generator/SKILL.md",
+      "computedHash": "7b18c30e111d6adabea9beea9541cec808a5060772588e98a0564c71df320cd2"
+    },
+    "ansible-playbook": {
+      "source": "realsigridjin/hello-ansible-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ansible-playbook/SKILL.md",
+      "computedHash": "df0423b0292a43ecab30ccd99c944dd95fb678858a05c0793c079b68377e3a48"
+    },
+    "ansible-validator": {
+      "source": "akin-ozer/cc-devops-skills",
+      "sourceType": "github",
+      "skillPath": "devops-skills-plugin/skills/ansible-validator/SKILL.md",
+      "computedHash": "44461dda21e036f66ee0c6c68162a31e149eae67a734de14a4cf2c4f8ff9fb12"
+    }
+  }
+}

@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Atajo para aplicar site.yml en un entorno.
+#
+#   ./ansible instalar          instala las colecciones de requirements.yml
+#   ./ansible test plan         simula en test (--check --diff)
+#   ./ansible test apply        aplica en test
+#   ./ansible produccion plan   simula en producción
+#   ./ansible produccion apply  aplica en producción (pide confirmación)
+#   ./ansible test secretos     crea o edita los secretos cifrados de test
+#   ./ansible test conectar IP USUARIO   crea la clave SSH y prepara la conexión
+#   ./ansible test ssh          entra al servidor de test
+#
+# Lo que se añada al final se pasa a ansible-playbook, por ejemplo:
+#   ./ansible test plan --list-tasks
+#
+# Desde PowerShell o CMD se usa .\ansible (ansible.cmd lo llama con "bash"
+# porque editar este archivo desde Windows le quita el permiso de ejecución).
+set -euo pipefail
+
+uso() {
+  echo "Uso: ./ansible <entorno> <plan|apply> [opciones de ansible-playbook]" >&2
+  echo "     ./ansible <entorno> conectar <IP_DEL_SERVIDOR> <USUARIO>" >&2
+  echo "     ./ansible <entorno> ssh" >&2
+  echo "     ./ansible <entorno> secretos" >&2
+  echo "     ./ansible instalar" >&2
+  echo "Entornos disponibles: $(ls inventory | tr '\n' ' ')" >&2
+  exit 1
+}
+
+# Claves SSH de administrador por entorno (solo existen en este PC).
+clave_del_entorno() {
+  case "$1" in
+    test) echo "$HOME/.ssh/testgcp" ;;
+    produccion) echo "$HOME/.ssh/produccion" ;;
+  esac
+}
+
+# Carga la clave en ssh-agent para pedir la passphrase una sola vez.
+cargar_clave() {
+  local clave estado=0 huella
+  clave="$(clave_del_entorno "$entorno")"
+  [[ -n "$clave" && -f "$clave" && -f "$clave.pub" ]] || return 0
+
+  export SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-$HOME/.ssh/agent.sock}"
+  ssh-add -l >/dev/null 2>&1 || estado=$?
+  if [[ "$estado" -eq 2 ]]; then # no hay agente en marcha
+    export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
+    rm -f "$SSH_AUTH_SOCK"
+    eval "$(ssh-agent -s -a "$SSH_AUTH_SOCK")" >/dev/null
+  fi
+
+  huella="$(ssh-keygen -lf "$clave.pub" | awk '{print $2}')"
+  if ! ssh-add -l 2>/dev/null | grep -F "$huella" >/dev/null; then
+    ssh-add "$clave" || echo "Aviso: no se pudo cargar $clave en ssh-agent." >&2
+  fi
+}
+
+# Lee un dato de la línea del servidor en hosts.ini, por ejemplo ansible_host.
+dato_inventario() {
+  sed -nE "/^[^#]/ s/.*$1=([^ ]+).*/\1/p" "$inventario"
+}
+
+# Detiene el comando si este entorno aún no está conectado a un servidor.
+exigir_conexion() {
+  clave="$(clave_del_entorno "$entorno")"
+  if [[ ! -f "$clave" || "$(dato_inventario ansible_host)" == "IP_DEL_SERVIDOR" ]]; then
+    echo "Este entorno aún no está conectado a un servidor. Ejecuta primero:" >&2
+    echo "  .\\ansible $entorno conectar <IP_DEL_SERVIDOR> <USUARIO>" >&2
+    exit 1
+  fi
+}
+
+# Prueba si se puede entrar con la clave, sin pedir nada. Deja el resultado en
+# "estado" (0 solo si se pudo entrar) y el mensaje de ssh en "salida".
+probar_ssh() {
+  estado=0
+  salida="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+    -i "$clave" "$destino" true 2>&1)" || estado=$?
+}
+
+# Explica cómo añadir la clave cuando el servidor no acepta contraseñas, como en
+# Google Cloud. La clave pública no es secreta: se puede copiar y pegar sin riesgo.
+explicar_clave_manual() {
+  local usuario_de_la_clave
+  usuario_de_la_clave="$(awk '{print $3}' "$clave.pub" | cut -d@ -f1)"
+
+  echo
+  echo "El servidor todavía no reconoce tu clave y no acepta contraseñas."
+  echo "Hay que añadirla a mano. Esta es tu clave PÚBLICA:"
+  echo
+  cat "$clave.pub"
+  echo
+  if clip.exe < "$clave.pub" 2>/dev/null; then
+    echo "Ya está copiada en el portapapeles."
+  fi
+  echo "En Google Cloud: Compute Engine > Instancias de VM > tu VM > Editar >"
+  echo "Claves SSH > Agregar elemento. Pégala, guarda y vuelve a ejecutar este comando."
+  if [[ "$usuario_de_la_clave" != "$1" ]]; then
+    echo
+    echo "ATENCIÓN: Google Cloud creará el usuario '$usuario_de_la_clave', que es el"
+    echo "nombre al final de la clave, y tú indicaste '$1'. Usa '$usuario_de_la_clave' en este comando."
+  fi
+}
+
+# Deja todo listo para administrar un servidor: crea la clave si no existe, guarda
+# la IP y el usuario en hosts.ini y comprueba que se puede entrar.
+conectar_servidor() {
+  local ip="${1:-}" usuario="${2:-}" destino salida estado respuesta=""
+
+  # Estos datos se escriben en hosts.ini, así que solo se aceptan caracteres válidos.
+  if [[ ! "$ip" =~ ^[A-Za-z0-9.:-]+$ || ! "$usuario" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+    echo "Uso: .\\ansible $entorno conectar <IP_DEL_SERVIDOR> <USUARIO>" >&2
+    exit 1
+  fi
+  destino="$usuario@$ip"
+
+  clave="$(clave_del_entorno "$entorno")"
+  if [[ -z "$clave" ]]; then
+    echo "El entorno $entorno no tiene una clave definida en clave_del_entorno." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$clave" ]]; then
+    echo "Creando tu clave SSH para $entorno. Se recomienda ponerle una passphrase."
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    ssh-keygen -t ed25519 -C "$usuario" -f "$clave"
+  fi
+
+  sed -E -i "/^[^#]/ { s/ansible_host=[^ ]+/ansible_host=$ip/; s/ansible_user=[^ ]+/ansible_user=$usuario/ }" "$inventario"
+  cargar_clave
+  probar_ssh
+
+  # SSH recuerda la identidad de cada servidor para detectar suplantaciones.
+  # Un servidor recién creado tiene otra, así que solo tú puedes confirmar el motivo.
+  if [[ "$salida" == *"IDENTIFICATION HAS CHANGED"* ]]; then
+    echo "La identidad del servidor $ip ha cambiado desde la última conexión."
+    echo "Es normal si acabas de crearlo o reinstalarlo. Si no, podría ser una suplantación."
+    read -r -p "Escribe 'si' solo si lo acabas de crear o reinstalar: " respuesta || true
+    if [[ "$respuesta" != "si" ]]; then
+      echo "Cancelado: no se cambió la identidad guardada." >&2
+      exit 1
+    fi
+    ssh-keygen -R "$ip" >/dev/null 2>&1
+    probar_ssh
+  fi
+
+  if [[ "$salida" == *"Permission denied"*password* ]]; then
+    echo "Te pedirá la contraseña de $usuario una sola vez, para copiar tu clave."
+    ssh-copy-id -i "$clave.pub" -o StrictHostKeyChecking=accept-new "$destino" || true
+    probar_ssh
+  fi
+
+  # Solo se da por buena la conexión si ssh pudo entrar de verdad.
+  if [[ "$estado" -ne 0 ]]; then
+    if [[ "$salida" == *"Permission denied"* ]]; then
+      explicar_clave_manual "$usuario"
+    else
+      echo "No se pudo conectar con $ip. Revisa la IP y que el puerto 22 esté abierto." >&2
+      echo "Detalle: $salida" >&2
+    fi
+    exit 1
+  fi
+
+  echo "Conexión correcta con $destino. Datos guardados en $inventario."
+  echo "Para entrar al servidor:  .\\ansible $entorno ssh"
+  echo "Para aplicar los cambios: .\\ansible $entorno apply"
+}
+
+# Abre los secretos del entorno. La primera vez los crea: inventa una contraseña
+# para el Vault y sustituye cada CAMBIAR del ejemplo por un valor aleatorio.
+editar_secretos() {
+  local ejemplo="inventory/$entorno/vault.ejemplo.yml"
+  local cifrado="inventory/$entorno/group_vars/servidores/vault.yml"
+  local temporal linea
+
+  if [[ ! -f "$contrasena_vault" ]]; then
+    mkdir -p "$(dirname "$contrasena_vault")"
+    chmod 700 "$(dirname "$contrasena_vault")"
+    (umask 077 && openssl rand -hex 32 > "$contrasena_vault")
+    echo "Contraseña del Vault creada en $contrasena_vault"
+    echo "GUÁRDALA en un gestor de contraseñas. Sin ella no se pueden abrir los secretos:"
+    cat "$contrasena_vault"
+  fi
+
+  if [[ ! -f "$cifrado" ]]; then
+    temporal="$(mktemp)"
+    while IFS= read -r linea; do
+      while [[ "$linea" == *CAMBIAR* ]]; do
+        linea="${linea/CAMBIAR/$(openssl rand -hex 24)}"
+      done
+      printf '%s\n' "$linea"
+    done < "$ejemplo" > "$temporal"
+    ansible-vault encrypt --vault-password-file "$contrasena_vault" --output "$cifrado" "$temporal"
+    rm -f "$temporal"
+  fi
+
+  export EDITOR="${EDITOR:-nano}"
+  exec ansible-vault edit --vault-password-file "$contrasena_vault" "$cifrado"
+}
+
+# Siempre se trabaja desde la raíz del proyecto, donde está ansible.cfg.
+cd "$(dirname "$(readlink -f "$0")")"
+
+# pipx instala ansible aquí, y esta carpeta no siempre está en el PATH.
+export PATH="$HOME/.local/bin:$PATH"
+
+if [[ "${1:-}" == "instalar" ]]; then
+  shift
+  exec ansible-galaxy collection install -r requirements.yml "$@"
+fi
+
+[[ $# -ge 2 ]] || uso
+entorno="$1"
+accion="$2"
+shift 2
+
+inventario="inventory/$entorno/hosts.ini"
+[[ -f "$inventario" ]] || { echo "Entorno desconocido: $entorno" >&2; uso; }
+
+# Cada entorno tiene su contraseña de Vault, guardada solo en este PC.
+contrasena_vault="$HOME/.ansible-vault/$entorno"
+opciones_vault=()
+if [[ -f "$contrasena_vault" ]]; then
+  opciones_vault=(--vault-password-file "$contrasena_vault")
+fi
+
+case "$accion" in
+  conectar)
+    conectar_servidor "$@"
+    ;;
+  ssh)
+    exigir_conexion
+    cargar_clave
+    exec ssh -i "$clave" "$(dato_inventario ansible_user)@$(dato_inventario ansible_host)" "$@"
+    ;;
+  secretos)
+    editar_secretos
+    ;;
+  plan)
+    exigir_conexion
+    cargar_clave
+    exec ansible-playbook -i "$inventario" --private-key "$clave" "${opciones_vault[@]}" site.yml --check --diff "$@"
+    ;;
+  apply)
+    exigir_conexion
+    if [[ "$entorno" == "produccion" ]]; then
+      respuesta=""
+      read -r -p "Vas a aplicar los cambios en PRODUCCIÓN. Escribe 'produccion' para continuar: " respuesta || true
+      if [[ "$respuesta" != "produccion" ]]; then
+        echo "Cancelado: no se aplicó nada." >&2
+        exit 1
+      fi
+    fi
+    cargar_clave
+    exec ansible-playbook -i "$inventario" --private-key "$clave" "${opciones_vault[@]}" site.yml "$@"
+    ;;
+  *)
+    echo "Acción desconocida: $accion" >&2
+    uso
+    ;;
+esac

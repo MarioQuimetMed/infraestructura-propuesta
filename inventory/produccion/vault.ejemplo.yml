@@ -1,0 +1,11 @@
+---
+# Lista de los secretos de PRODUCCIÓN, sin valores reales.
+#
+# ".\ansible produccion secretos" usa este archivo la primera vez para crear
+# group_vars/servidores/vault.yml, cifrado y con valores aleatorios.
+#
+# Si añades una base a postgres.yml, añade su contraseña en el vault.yml con:
+#   .\ansible produccion secretos
+
+vault_grafana_admin: "CAMBIAR"
+vault_restic: "CAMBIAR"

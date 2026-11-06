@@ -1,0 +1,46 @@
+---
+# Usuarios con acceso SSH a los servidores del grupo [servidores].
+# Lo usa playbooks/usuarios.yml.
+#
+# Campos:
+#   nombre:      usuario Linux
+#   descripcion: quién es (queda en /etc/passwd)
+#   rol:         admin -> ssh-access + sudo sin contraseña (grupo admins)
+#                dev   -> solo ssh-access (sin sudo, sin docker)
+#   claves:      claves PÚBLICAS SSH (.pub). Nunca pegar una clave privada.
+#                Son las únicas permitidas: quitar una línea revoca esa clave.
+#   estado:      present (crear/mantener) | absent (eliminar usuario y su home)
+#
+# Para dar de baja a alguien: cambiar su estado a absent (no borrar la entrada
+# hasta haber ejecutado el playbook, o el usuario seguiría existiendo).
+
+usuarios:
+  - nombre: dev_quimet
+    descripcion: "Quimet - desarrollador"
+    rol: dev
+    claves:
+      # Generar la clave en windows en un cmd
+      # el comando es "ssh-keygen -t ed25519 -C "dev_quimet" -f dev_quimet_ed25519"
+      # Comando para conectarse al servidor: "ssh -i dev_quimet_ed25519 dev_quimet@IP_DEL_SERVIDOR"
+      # Aquí va el contenido del archivo .pub (se ve con: type dev_quimet_ed25519.pub),
+      # no la huella SHA256 que muestra ssh-keygen al crear la clave.
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDJJZUagrF34t65gz9Xd/qlpv0wmTaAVOPT8stb8Zjpy dev_quimet"
+    estado: present
+
+  - nombre: dev_will
+    descripcion: "Will - desarrollador"
+    rol: dev
+    claves:
+      # Generar la clave en windows en un cmd
+      # el comando es "ssh-keygen -t ed25519 -C "dev_quimet" -f dev_quimet_ed25519"
+      # Comando para conectarse al servidor: "ssh -i dev_quimet_ed25519 dev_quimet@IP_DEL_SERVIDOR"
+      # Aquí va el contenido del archivo .pub (se ve con: type dev_quimet_ed25519.pub),
+      # no la huella SHA256 que muestra ssh-keygen al crear la clave.
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA51a432DrRjPF4W6a09BBH4Q/Dp2g+b8AXf9W/KFm7U dev_will"
+    estado: present
+
+# Cuentas que ya existen y no gestiona este playbook (en GCP las crea el
+# agente de Google), pero que deben pertenecer a ssh-access para no quedarse
+# fuera cuando se aplique "AllowGroups ssh-access" en el hardening SSH.
+administradores_existentes:
+  - mario

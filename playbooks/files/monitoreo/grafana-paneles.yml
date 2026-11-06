@@ -1,0 +1,14 @@
+---
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+#
+# Grafana carga los paneles de esta carpeta. Con allowUiUpdates en false no se
+# pueden modificar desde la web: los cambios se hacen en este repositorio.
+
+apiVersion: 1
+
+providers:
+  - name: Servidor
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/paneles

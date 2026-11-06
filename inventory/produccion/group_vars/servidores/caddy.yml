@@ -1,0 +1,28 @@
+---
+# Sitios publicados por Caddy en PRODUCCIÓN.
+# Lo usa playbooks/caddy.yml.
+#
+# Campos de cada sitio:
+#   nombre:   identificador; genera /etc/caddy/sites-enabled/<nombre>.caddy
+#   dominio:  el DNS debe apuntar a la IP del servidor ANTES de aplicar
+#   tipo:     estatico -> sirve archivos (build de React)
+#             proxy    -> reenvía a un backend (contenedor Docker en localhost)
+#   raiz:     (estatico) carpeta con los archivos
+#   destino:  (proxy) dirección del backend, siempre 127.0.0.1:PUERTO
+#   estado:   present | absent (absent elimina el sitio de Caddy)
+
+# Email para avisos de Let's Encrypt (caducidad, problemas). Opcional.
+caddy_email: ""
+
+# Completar con el dominio real antes de añadir sitios.
+dominio_web: "DOMINIO_DE_PRODUCCION"
+
+# Sin sitios todavía. Ejemplo:
+#
+# sitios:
+#   - nombre: ventas
+#     dominio: "ventas.{{ dominio_web }}"
+#     tipo: proxy
+#     destino: "127.0.0.1:3001"
+#     estado: present
+sitios: []

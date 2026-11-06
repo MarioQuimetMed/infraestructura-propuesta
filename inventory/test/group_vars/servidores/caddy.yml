@@ -1,0 +1,30 @@
+---
+# Sitios publicados por Caddy en el entorno de PRUEBAS.
+# Lo usa playbooks/caddy.yml.
+#
+# Campos de cada sitio:
+#   nombre:   identificador; genera /etc/caddy/sites-enabled/<nombre>.caddy
+#   dominio:  el DNS debe apuntar a la IP del servidor ANTES de aplicar
+#   tipo:     estatico -> sirve archivos (build de React)
+#             proxy    -> reenvía a un backend (contenedor Docker en localhost)
+#   raiz:     (estatico) carpeta con los archivos
+#   destino:  (proxy) dirección del backend, siempre 127.0.0.1:PUERTO
+#   estado:   present | absent (absent elimina el sitio de Caddy)
+
+# Email para avisos de Let's Encrypt (caducidad, problemas). Opcional.
+caddy_email: ""
+
+dominio_web: "plantilla-kais.duckdns.org"
+
+sitios:
+  - nombre: web-demo
+    dominio: "{{ dominio_web }}"
+    tipo: estatico
+    raiz: /srv/www/web-demo
+    estado: present
+
+  - nombre: api-demo
+    dominio: "api.{{ dominio_web }}"
+    tipo: proxy
+    destino: "127.0.0.1:3001" # aún no hay backend: responderá 502 hasta que exista
+    estado: present

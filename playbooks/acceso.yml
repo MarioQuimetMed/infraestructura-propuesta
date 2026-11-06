@@ -1,0 +1,151 @@
+---
+# Firewall (UFW) y seguridad de SSH. Es el playbook que podría dejarte fuera del
+# servidor, así que primero comprueba que eso no va a pasar.
+#
+# Las opciones están en inventory/<entorno>/group_vars/servidores/acceso.yml
+#
+# Si aun así pierdes el acceso, sigue "Recuperar el acceso" en docs/seguridad.md.
+
+- name: Configurar el firewall y SSH
+  hosts: servidores
+  become: true
+
+  tasks:
+    # --- Comprobar que no te vas a quedar fuera -------------------------------
+
+    # Se ejecuta sin sudo para ver tu usuario real, no root.
+    # SSH_CONNECTION tiene el formato: IP_cliente puerto IP_servidor puerto
+    - name: Ver con qué usuario y por qué IP estás conectado
+      ansible.builtin.shell:
+        cmd: echo "$(id -un) $SSH_CONNECTION"
+      become: false
+      check_mode: false
+      changed_when: false
+      register: acceso_conexion
+
+    - name: Guardar el usuario y la IP de la conexión
+      ansible.builtin.set_fact:
+        acceso_usuario: "{{ acceso_conexion.stdout.split()[0] }}"
+        acceso_ip_servidor: "{{ acceso_conexion.stdout.split()[3] }}"
+
+    - name: Consultar los usuarios del servidor
+      ansible.builtin.getent:
+        database: passwd
+
+    - name: Consultar los grupos del servidor
+      ansible.builtin.getent:
+        database: group
+
+    - name: Buscar tus claves autorizadas
+      ansible.builtin.stat:
+        path: "{{ ansible_facts.getent_passwd[acceso_usuario][4] }}/.ssh/authorized_keys"
+      register: acceso_claves
+
+    - name: Comprobar que conservarás el acceso
+      ansible.builtin.assert:
+        that:
+          - "'ssh-access' in ansible_facts.getent_group"
+          - acceso_usuario in ansible_facts.getent_group['ssh-access'][2].split(',')
+          - acceso_claves.stat.exists and acceso_claves.stat.size > 0
+        fail_msg: >-
+          Te quedarías fuera: {{ acceso_usuario }} debe estar en el grupo ssh-access y
+          tener una clave en authorized_keys. Añádelo a administradores_existentes
+          en usuarios.yml y copia tu clave con ssh-copy-id.
+        quiet: true
+
+    - name: Comprobar que SSH seguirá teniendo una vía de entrada
+      ansible.builtin.assert:
+        that:
+          - acceso_ssh_solo_vpn or acceso_ssh_origenes | length > 0
+          - not acceso_ssh_solo_vpn or acceso_ip_servidor == wireguard_ip_servidor
+        fail_msg: >-
+          Para activar acceso_ssh_solo_vpn debes estar conectado por la VPN, con
+          {{ wireguard_ip_servidor }} como dirección del servidor. Ahora estás
+          conectado a {{ acceso_ip_servidor }}.
+        quiet: true
+
+    # --- Firewall -------------------------------------------------------------
+    # Primero se añaden las reglas y al final se activa el firewall. Al revés,
+    # el firewall podría bloquear SSH antes de que exista la regla que lo permite.
+
+    - name: Instalar UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+
+    - name: Permitir el tráfico web para Caddy
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["80", "443"]
+
+    - name: Permitir la conexión a la VPN
+      community.general.ufw:
+        rule: allow
+        port: "{{ wireguard_puerto | string }}"
+        proto: udp
+
+    # Estos puertos solo se abren dentro de la VPN (interfaz wg0).
+    - name: Permitir SSH y Grafana desde la VPN
+      community.general.ufw:
+        rule: allow
+        direction: in
+        interface: wg0
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["22", "3000"]
+
+    # Con acceso_ssh_solo_vpn en true, estas mismas reglas se eliminan.
+    # Si quitas un origen de la lista, su regla no se borra sola:
+    # hay que borrarla con "sudo ufw delete".
+    - name: Ajustar el acceso a SSH desde fuera de la VPN
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        from_ip: "{{ item }}"
+        delete: "{{ acceso_ssh_solo_vpn }}"
+      loop: "{{ acceso_ssh_origenes }}"
+
+    - name: Denegar por defecto el tráfico entrante
+      community.general.ufw:
+        default: deny
+        direction: incoming
+
+    - name: Activar el firewall
+      community.general.ufw:
+        state: enabled
+
+    # --- SSH ------------------------------------------------------------------
+
+    # Ubuntu aplica el primer valor que encuentra para cada opción. El prefijo
+    # "00-" hace que este archivo se lea antes que los demás.
+    - name: Configurar la seguridad de SSH
+      ansible.builtin.copy:
+        src: files/ssh/00-seguridad.conf
+        dest: /etc/ssh/sshd_config.d/00-seguridad.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Recargar SSH
+
+    - name: Aplicar la configuración de SSH ahora si cambió
+      ansible.builtin.meta: flush_handlers
+
+    # --- Probar que se sigue pudiendo entrar ----------------------------------
+    # Ansible reutiliza su conexión abierta, que no se ve afectada por los cambios.
+    # Hay que cerrarla para que la siguiente tarea entre como lo harás tú.
+
+    - name: Cerrar la conexión SSH actual
+      ansible.builtin.meta: reset_connection
+
+    - name: Probar una conexión SSH nueva
+      ansible.builtin.ping:
+
+  handlers:
+    - name: Recargar SSH
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded

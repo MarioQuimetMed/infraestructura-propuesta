@@ -1,0 +1,29 @@
+# Gestionado por Ansible. Sitio: {{ item.nombre }}
+
+{{ item.dominio }} {
+{% if item.tipo == 'estatico' %}
+	root * {{ item.raiz }}
+	encode zstd gzip
+	# SPA (React): las rutas del cliente (/clientes/5) devuelven index.html
+	try_files {path} /index.html
+	file_server
+{% elif item.tipo == 'proxy' %}
+	reverse_proxy {{ item.destino }}
+{% endif %}
+
+	# Cabeceras de seguridad básicas
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Log de accesos en JSON, uno por sitio
+	log {
+		output file /var/log/caddy/{{ item.nombre }}.log {
+			mode 0640
+		}
+		format json
+	}
+}

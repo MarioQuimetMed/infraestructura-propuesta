@@ -1,0 +1,55 @@
+---
+# Configuración base de Ubuntu: paquetes esenciales, auditd y parches de seguridad.
+#
+# Simular:   ansible-playbook playbooks/base.yml --check --diff
+# Aplicar:   ansible-playbook playbooks/base.yml
+
+- name: Configuración base de Ubuntu
+  hosts: servidores
+  become: true
+
+  tasks:
+    # Se ejecuta incluso con --check: sin la lista de paquetes, la simulación
+    # no puede saber qué instalaría (las imágenes de GCP la traen vacía).
+    # Solo descarga índices de paquetes; no instala ni modifica nada más.
+    - name: Actualizar la lista de paquetes de APT
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600   # no la refresca si tiene menos de 1 h
+      check_mode: false
+
+    - name: Instalar herramientas esenciales
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - htop
+          - auditd
+          - python3-debian        # lo necesitan las tareas que añaden repositorios
+          - unattended-upgrades
+        state: present
+
+    # La configuración que trae Ubuntu solo instala parches de seguridad y no
+    # reinicia el servidor. Este archivo únicamente activa la ejecución diaria.
+    # Si un parche requiere reiniciar, hay que hacerlo a mano.
+    - name: Activar las actualizaciones automáticas de seguridad
+      ansible.builtin.copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Consultar servicios instalados
+      ansible.builtin.service_facts:
+
+    # En --check, auditd puede no existir todavía porque no se instaló de verdad.
+    # Solo en ese caso se omite; cualquier otro error detiene el playbook.
+    - name: Habilitar y arrancar auditd
+      ansible.builtin.systemd_service:
+        name: auditd
+        enabled: true
+        state: started
+      when: not ansible_check_mode or 'auditd.service' in ansible_facts.services

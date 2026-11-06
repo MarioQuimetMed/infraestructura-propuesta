@@ -1,0 +1,16 @@
+---
+# Firewall y SSH del entorno de TEST. Lo usa playbooks/acceso.yml.
+
+# false: se puede entrar por SSH desde la VPN y desde acceso_ssh_origenes.
+# true:  solo se puede entrar por la VPN.
+#
+# Se pasa a true en dos pasos, para no quedarte fuera:
+#   1. Conéctate a la VPN, ejecuta .\ansible test conectar 10.60.0.1 TU_USUARIO
+#      y aplica con false.
+#   2. Cambia a true y vuelve a aplicar. Sin el paso 1, el playbook se detiene.
+acceso_ssh_solo_vpn: false
+
+# Desde dónde se permite SSH mientras acceso_ssh_solo_vpn sea false.
+# En test se deja "any" porque el firewall de Google Cloud ya limita el puerto 22.
+acceso_ssh_origenes:
+  - any

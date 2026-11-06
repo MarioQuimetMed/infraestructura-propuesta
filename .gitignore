@@ -1,0 +1,13 @@
+# Archivos temporales de Ansible y Python
+.ansible/
+*.retry
+__pycache__/
+
+# Ajustes locales de cada persona
+.claude/settings.local.json
+
+# Secretos que nunca deben subirse. Los vault.yml SÍ se suben porque van
+# cifrados; lo que no se sube es la contraseña que los abre.
+*.vault-pass
+.env
+*.key

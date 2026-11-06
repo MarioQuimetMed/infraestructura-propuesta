@@ -1,0 +1,298 @@
+---
+# Monitoreo: permite ver desde la web quién hizo qué y cómo está el servidor.
+#
+#   Alloy         recoge los logs (SSH, sudo, auditoría, Caddy, PostgreSQL, contenedores)
+#   Loki          los guarda 90 días y permite buscarlos
+#   node_exporter mide CPU, RAM y disco, y publica la lista de usuarios Linux
+#   Prometheus    guarda esas métricas 30 días
+#   Grafana       muestra todo en paneles, en http://10.60.0.1:3000 (solo por la VPN)
+#
+# Salvo Grafana, todo escucha en 127.0.0.1 y no es accesible desde fuera.
+#
+# Primera instalación: usa apply. "plan" falla si estos programas aún no están instalados.
+
+- name: Instalar y configurar el monitoreo
+  hosts: servidores
+  become: true
+
+  tasks:
+    - name: Comprobar que existe la contraseña de Grafana
+      ansible.builtin.assert:
+        that:
+          - vault_grafana_admin is defined
+          - vault_grafana_admin != 'CAMBIAR'
+        fail_msg: "Falta vault_grafana_admin en vault.yml. Créalo con: .\\ansible <entorno> secretos"
+        quiet: true
+      no_log: true
+
+    # --- Instalación ----------------------------------------------------------
+
+    - name: Añadir el repositorio oficial de Grafana
+      ansible.builtin.deb822_repository:
+        name: grafana
+        types: deb
+        uris: https://apt.grafana.com
+        suites: stable
+        components: main
+        signed_by: https://apt.grafana.com/gpg.key
+      register: monitoreo_repositorio
+
+    - name: Instalar los programas de monitoreo
+      ansible.builtin.apt:
+        name:
+          - grafana
+          - loki
+          - alloy
+          - prometheus
+          - prometheus-node-exporter
+        state: present
+        update_cache: "{{ monitoreo_repositorio is changed }}"
+
+    # --- Loki -----------------------------------------------------------------
+
+    # El paquete de Loki no crea la carpeta de datos que usa esta configuración.
+    - name: Crear la carpeta de datos de Loki
+      ansible.builtin.file:
+        path: /var/lib/loki
+        state: directory
+        owner: loki
+        group: nogroup
+        mode: "0750"
+
+    - name: Configurar Loki
+      ansible.builtin.copy:
+        src: files/monitoreo/loki.yml
+        dest: /etc/loki/config.yml
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/bin/loki -verify-config -config.file=%s
+      notify: Reiniciar Loki
+
+    # --- Alloy ----------------------------------------------------------------
+
+    # Alloy solo necesita leer logs, así que recibe únicamente estos grupos:
+    #   adm: Laurel y PostgreSQL | systemd-journal: el journal | caddy: logs de Caddy
+    - name: Dar a Alloy permiso para leer los logs
+      ansible.builtin.user:
+        name: alloy
+        groups: [adm, systemd-journal, caddy]
+        append: true
+      notify: Reiniciar Alloy
+
+    - name: Configurar Alloy
+      ansible.builtin.copy:
+        src: files/monitoreo/config.alloy
+        dest: /etc/alloy/config.alloy
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/bin/alloy validate %s
+      notify: Reiniciar Alloy
+
+    # --- Prometheus y node_exporter -------------------------------------------
+
+    - name: Configurar Prometheus
+      ansible.builtin.copy:
+        src: files/monitoreo/prometheus.yml
+        dest: /etc/prometheus/prometheus.yml
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/bin/promtool check config %s
+      notify: Reiniciar Prometheus
+
+    - name: Limitar Prometheus a 127.0.0.1 y a 30 días de datos
+      ansible.builtin.copy:
+        content: |
+          ARGS="--web.listen-address=127.0.0.1:9090 --storage.tsdb.retention.time=30d"
+        dest: /etc/default/prometheus
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar Prometheus
+
+    # node_exporter publica cualquier archivo .prom de esa carpeta como métricas.
+    # Así es como el script de abajo hace llegar la lista de usuarios a Grafana.
+    - name: Limitar node_exporter a 127.0.0.1
+      ansible.builtin.copy:
+        content: |
+          ARGS="--web.listen-address=127.0.0.1:9100 --collector.textfile.directory=/var/lib/prometheus/node-exporter"
+        dest: /etc/default/prometheus-node-exporter
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar node_exporter
+
+    # --- Lista de usuarios Linux ----------------------------------------------
+
+    - name: Instalar el script que publica los usuarios
+      ansible.builtin.copy:
+        src: files/monitoreo/usuarios-linux.sh
+        dest: /usr/local/sbin/usuarios-linux.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Instalar el servicio de usuarios y su temporizador
+      ansible.builtin.copy:
+        src: "files/monitoreo/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - usuarios-linux.service
+        - usuarios-linux.timer
+      notify: Recargar systemd
+
+    # --- Grafana --------------------------------------------------------------
+
+    # Contiene la contraseña de administrador, de ahí el no_log y el modo 0640.
+    # Grafana solo la usa al crear su base de datos: cambiarla en el Vault después
+    # no la cambia en Grafana. Ver docs/seguridad.md.
+    - name: Configurar Grafana
+      ansible.builtin.template:
+        src: templates/monitoreo/grafana.ini.j2
+        dest: /etc/grafana/grafana.ini
+        owner: root
+        group: grafana
+        mode: "0640"
+      no_log: true
+      diff: false
+      notify: Reiniciar Grafana
+
+    # Grafana escucha en la IP de la VPN, así que debe arrancar después de ella.
+    - name: Crear la carpeta de ajustes del servicio de Grafana
+      ansible.builtin.file:
+        path: /etc/systemd/system/grafana-server.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Hacer que Grafana arranque después de la VPN
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          After=wg-quick@wg0.service
+          Wants=wg-quick@wg0.service
+        dest: /etc/systemd/system/grafana-server.service.d/vpn.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar Grafana
+
+    # "Provisioning" significa que Grafana carga estos archivos al arrancar, sin
+    # configurar nada a mano en la web.
+    - name: Configurar los orígenes de datos de Grafana
+      ansible.builtin.copy:
+        src: files/monitoreo/grafana-datos.yml
+        dest: /etc/grafana/provisioning/datasources/servidor.yml
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Reiniciar Grafana
+
+    - name: Indicar a Grafana dónde están los paneles
+      ansible.builtin.copy:
+        src: files/monitoreo/grafana-paneles.yml
+        dest: /etc/grafana/provisioning/dashboards/servidor.yml
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Reiniciar Grafana
+
+    - name: Crear la carpeta de los paneles
+      ansible.builtin.file:
+        path: /etc/grafana/paneles
+        state: directory
+        owner: root
+        group: grafana
+        mode: "0750"
+
+    - name: Instalar los paneles
+      ansible.builtin.copy:
+        src: "files/monitoreo/paneles/{{ item }}"
+        dest: "/etc/grafana/paneles/{{ item }}"
+        owner: root
+        group: grafana
+        mode: "0640"
+      loop:
+        - actividad-usuarios.json
+        - servidor.json
+
+    # --- Arrancar y comprobar -------------------------------------------------
+
+    - name: Aplicar los cambios ahora si hubo
+      ansible.builtin.meta: flush_handlers
+
+    - name: Habilitar y arrancar los servicios
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - loki
+        - alloy
+        - prometheus
+        - prometheus-node-exporter
+        - usuarios-linux.timer
+        - grafana-server
+
+    # Publica la lista de usuarios ya, sin esperar a que se cumplan 5 minutos.
+    - name: Publicar la lista de usuarios
+      ansible.builtin.systemd_service:
+        name: usuarios-linux.service
+        state: started
+      changed_when: false
+      when: not ansible_check_mode
+
+    # Los servicios tardan unos segundos en estar listos después de arrancar.
+    - name: Comprobar que los servicios responden
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 200
+      register: monitoreo_respuesta
+      until: monitoreo_respuesta.status == 200
+      retries: 12
+      delay: 5
+      loop:
+        - http://127.0.0.1:3100/ready
+        - http://127.0.0.1:9090/-/ready
+        - http://127.0.0.1:9100/metrics
+        - "http://{{ wireguard_ip_servidor }}:3000/api/health"
+      when: not ansible_check_mode
+
+  handlers:
+    # Va primero porque Ansible ejecuta los handlers en el orden en que aparecen,
+    # y los servicios necesitan que systemd conozca sus ajustes nuevos.
+    - name: Recargar systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Reiniciar Loki
+      ansible.builtin.systemd_service:
+        name: loki
+        state: restarted
+
+    - name: Reiniciar Alloy
+      ansible.builtin.systemd_service:
+        name: alloy
+        state: restarted
+
+    - name: Reiniciar Prometheus
+      ansible.builtin.systemd_service:
+        name: prometheus
+        state: restarted
+
+    - name: Reiniciar node_exporter
+      ansible.builtin.systemd_service:
+        name: prometheus-node-exporter
+        state: restarted
+
+    - name: Reiniciar Grafana
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        state: restarted
+        daemon_reload: true

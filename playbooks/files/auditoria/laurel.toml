@@ -1,0 +1,27 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+
+directory = "/var/log/laurel"
+user = "_laurel"
+input = "stdin"
+
+[auditlog]
+file = "audit.log"
+# Guarda 10 archivos de 50 MB como máximo.
+size = 50000000
+generations = 10
+# El grupo adm es el habitual para leer logs. Alloy pertenece a él.
+read-groups = [ "adm" ]
+
+[state]
+file = "state"
+generations = 0
+max-age = 60
+
+[transform]
+# Guarda cada comando como un solo texto, que es más cómodo de leer en Grafana.
+execve-argv = [ "string" ]
+execve-argv-limit-bytes = 10000
+
+[translate]
+# Añade el nombre de usuario junto a su número, por ejemplo AUID: "mario".
+user-db = true

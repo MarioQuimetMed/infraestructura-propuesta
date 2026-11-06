@@ -1,0 +1,11 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+[Unit]
+Description=Backup diario del servidor
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# Si el servidor estaba apagado a esa hora, lo hace al encenderse.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

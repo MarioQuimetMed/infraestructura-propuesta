@@ -1,0 +1,7 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+[Unit]
+Description=Publicar la lista de usuarios Linux como métrica
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usuarios-linux.sh

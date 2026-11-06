@@ -1,0 +1,35 @@
+# Gestionado por Ansible. Los cambios hechos a mano se perderán.
+#
+# Cada regla termina en "-k nombre": es la etiqueta que se usa para filtrar en Grafana.
+# "-p wa" significa: registrar escrituras (w) y cambios de atributos (a).
+
+# --- Programas ejecutados por personas ------------------------------------------
+# auid es el usuario que inició la sesión. Los de 1000 o más son personas, y
+# "unset" son los servicios del sistema, que se excluyen para reducir el ruido.
+# Hay dos reglas porque los programas de 64 y 32 bits usan llamadas distintas.
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=unset -k comandos
+-a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=unset -k comandos
+
+# --- Cambios en archivos importantes --------------------------------------------
+# Cuentas y contraseñas
+-w /etc/passwd -p wa -k identidad
+-w /etc/group -p wa -k identidad
+-w /etc/shadow -p wa -k identidad
+-w /etc/gshadow -p wa -k identidad
+
+# Quién puede usar sudo
+-w /etc/sudoers -p wa -k sudo
+-w /etc/sudoers.d -p wa -k sudo
+
+# Configuración de SSH
+-w /etc/ssh/sshd_config -p wa -k ssh
+-w /etc/ssh/sshd_config.d -p wa -k ssh
+
+# La propia auditoría, para detectar si alguien intenta desactivarla
+-w /etc/audit -p wa -k auditoria
+-w /etc/laurel -p wa -k auditoria
+
+# Servicios
+-w /etc/docker -p wa -k docker
+-w /etc/caddy -p wa -k caddy
+-w /etc/wireguard -p wa -k vpn
